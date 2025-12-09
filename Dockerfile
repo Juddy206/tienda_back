@@ -1,28 +1,45 @@
-FROM php:8.2-fpm
+FROM php:8.2-apache
 
+# Habilitar módulos Apache
+RUN a2enmod rewrite headers proxy_http
+
+# Instalar extensiones PHP necesarias
 RUN apt-get update && apt-get install -y \
-    libpng-dev libjpeg-dev libonig-dev libxml2-dev zip unzip git curl \
-    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libxml2-dev libonig-dev libcurl4-openssl-dev unzip zip git \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) gd zip pdo pdo_mysql xml curl opcache bcmath
 
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+# Instalar Composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-WORKDIR /var/www
+ENV COMPOSER_ALLOW_SUPERUSER=1
 
-# Copiar solo composer files primero
-COPY composer.json composer.lock ./
+# Copiar el código fuente de Laravel dentro del contenedor
+COPY . /var/www/html
 
-# Instalar dependencias sin correr scripts para evitar error por falta de artisan
-RUN composer install --no-dev --optimize-autoloader --no-scripts
+WORKDIR /var/www/html
 
-# Copiar todo el código
-COPY . .
+# Instalar dependencias PHP
+RUN composer install --no-dev --optimize-autoloader
 
-# Ejecutar scripts que necesitan artisan
-RUN php artisan package:discover --ansi
+# Permisos necesarios
+RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache \
+    && chmod -R 755 /var/www/html \
+    && find /var/www/html -type f -exec chmod 644 {} \;
 
-EXPOSE 8000
+# Copiar configuración de Apache para Laravel y habilitar sitio
+COPY laravel.conf /etc/apache2/sites-available/laravel.conf
 
-CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
+RUN a2dissite 000-default.conf \
+    && a2ensite laravel.conf \
+    && a2enmod rewrite
 
+# Configurar límites para subir archivos
+RUN echo "upload_max_filesize=50M" > /usr/local/etc/php/conf.d/uploads.ini \
+ && echo "post_max_size=60M" >> /usr/local/etc/php/conf.d/uploads.ini
 
+# Exponer puerto 80
+EXPOSE 80
+
+# Comando para iniciar Apache
+CMD ["apache2-foreground"]
